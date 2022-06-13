@@ -17,13 +17,14 @@
 import {ChildProcess} from 'child_process';
 import {Protocol} from 'devtools-protocol';
 import {assert} from './assert.js';
-import {Connection, ConnectionEmittedEvents} from './Connection.js';
+import {CDPSession, Connection, ConnectionEmittedEvents} from './Connection.js';
 import {EventEmitter} from './EventEmitter.js';
 import {waitWithTimeout} from './util.js';
 import {Page} from './Page.js';
 import {Viewport} from './PuppeteerViewport.js';
 import {Target} from './Target.js';
 import {TaskQueue} from './TaskQueue.js';
+import {TargetManager, TargetManagerEmittedEvents} from './TargetManager.js';
 
 /**
  * BrowserContext options.
@@ -237,7 +238,7 @@ export class Browser extends EventEmitter {
       targetFilterCallback,
       isPageTargetCallback
     );
-    await connection.send('Target.setDiscoverTargets', {discover: true});
+    await browser._attach();
     return browser;
   }
   #ignoreHTTPSErrors: boolean;
@@ -250,14 +251,13 @@ export class Browser extends EventEmitter {
   #defaultContext: BrowserContext;
   #contexts: Map<string, BrowserContext>;
   #screenshotTaskQueue: TaskQueue;
-  #targets: Map<string, Target>;
-  #ignoredTargets = new Set<string>();
+  #targetManager: TargetManager;
 
   /**
    * @internal
    */
   get _targets(): Map<string, Target> {
-    return this.#targets;
+    return this.#targetManager.attachedTargets();
   }
 
   /**
@@ -286,6 +286,11 @@ export class Browser extends EventEmitter {
         return true;
       });
     this.#setIsPageTargetCallback(isPageTargetCallback);
+    this.#targetManager = new TargetManager(
+      connection,
+      this.#createTarget,
+      this.#targetFilterCallback
+    );
 
     this.#defaultContext = new BrowserContext(this.#connection, this);
     this.#contexts = new Map();
@@ -295,19 +300,54 @@ export class Browser extends EventEmitter {
         new BrowserContext(this.#connection, this, contextId)
       );
     }
+  }
 
-    this.#targets = new Map();
-    this.#connection.on(ConnectionEmittedEvents.Disconnected, () => {
-      return this.emit(BrowserEmittedEvents.Disconnected);
-    });
-    this.#connection.on('Target.targetCreated', this.#targetCreated.bind(this));
+  #emitDisconnected = () => {
+    this.emit(BrowserEmittedEvents.Disconnected);
+  };
+
+  /**
+   * @internal
+   */
+  async _attach(): Promise<void> {
     this.#connection.on(
-      'Target.targetDestroyed',
-      this.#targetDestroyed.bind(this)
+      ConnectionEmittedEvents.Disconnected,
+      this.#emitDisconnected
     );
-    this.#connection.on(
-      'Target.targetInfoChanged',
-      this.#targetInfoChanged.bind(this)
+    this.#targetManager.on(
+      TargetManagerEmittedEvents.AttachedToTarget,
+      this.#onAttachedToTarget
+    );
+    this.#targetManager.on(
+      TargetManagerEmittedEvents.DetachedFromTarget,
+      this.#onDetachedFromTarget
+    );
+    this.#targetManager.on(
+      TargetManagerEmittedEvents.TargetChanged,
+      this.#onTargetChanged
+    );
+    await this.#targetManager.initialize();
+  }
+
+  /**
+   * @internal
+   */
+  _detach(): void {
+    this.#connection.off(
+      ConnectionEmittedEvents.Disconnected,
+      this.#emitDisconnected
+    );
+    this.#targetManager.off(
+      TargetManagerEmittedEvents.AttachedToTarget,
+      this.#onAttachedToTarget
+    );
+    this.#targetManager.off(
+      TargetManagerEmittedEvents.DetachedFromTarget,
+      this.#onDetachedFromTarget
+    );
+    this.#targetManager.off(
+      TargetManagerEmittedEvents.TargetChanged,
+      this.#onTargetChanged
     );
   }
 
@@ -317,6 +357,13 @@ export class Browser extends EventEmitter {
    */
   process(): ChildProcess | null {
     return this.#process ?? null;
+  }
+
+  /**
+   * @internal
+   */
+  _targetManager(): TargetManager {
+    return this.#targetManager;
   }
 
   #setIsPageTargetCallback(isPageTargetCallback?: IsPageTargetCallback): void {
@@ -404,10 +451,10 @@ export class Browser extends EventEmitter {
     this.#contexts.delete(contextId);
   }
 
-  async #targetCreated(
-    event: Protocol.Target.TargetCreatedEvent
-  ): Promise<void> {
-    const targetInfo = event.targetInfo;
+  #createTarget = (
+    targetInfo: Protocol.Target.TargetInfo,
+    session?: CDPSession
+  ) => {
     const {browserContextId} = targetInfo;
     const context =
       browserContextId && this.#contexts.has(browserContextId)
@@ -418,15 +465,11 @@ export class Browser extends EventEmitter {
       throw new Error('Missing browser context');
     }
 
-    const shouldAttachToTarget = this.#targetFilterCallback(targetInfo);
-    if (!shouldAttachToTarget) {
-      this.#ignoredTargets.add(targetInfo.targetId);
-      return;
-    }
-
-    const target = new Target(
+    return new Target(
       targetInfo,
+      session,
       context,
+      this.#targetManager,
       () => {
         return this.#connection.createSession(targetInfo);
       },
@@ -435,30 +478,19 @@ export class Browser extends EventEmitter {
       this.#screenshotTaskQueue,
       this.#isPageTargetCallback
     );
-    assert(
-      !this.#targets.has(event.targetInfo.targetId),
-      'Target should not exist before targetCreated'
-    );
-    this.#targets.set(event.targetInfo.targetId, target);
+  };
 
+  #onAttachedToTarget = async (target: Target) => {
     if (await target._initializedPromise) {
       this.emit(BrowserEmittedEvents.TargetCreated, target);
-      context.emit(BrowserContextEmittedEvents.TargetCreated, target);
+      target
+        .browserContext()
+        .emit(BrowserContextEmittedEvents.TargetCreated, target);
     }
-  }
+  };
 
-  async #targetDestroyed(event: {targetId: string}): Promise<void> {
-    if (this.#ignoredTargets.has(event.targetId)) {
-      return;
-    }
-    const target = this.#targets.get(event.targetId);
-    if (!target) {
-      throw new Error(
-        `Missing target in _targetDestroyed (id = ${event.targetId})`
-      );
-    }
+  #onDetachedFromTarget = async (target: Target): Promise<void> => {
     target._initializedCallback(false);
-    this.#targets.delete(event.targetId);
     target._closedCallback();
     if (await target._initializedPromise) {
       this.emit(BrowserEmittedEvents.TargetDestroyed, target);
@@ -466,28 +498,25 @@ export class Browser extends EventEmitter {
         .browserContext()
         .emit(BrowserContextEmittedEvents.TargetDestroyed, target);
     }
-  }
+  };
 
-  #targetInfoChanged(event: Protocol.Target.TargetInfoChangedEvent): void {
-    if (this.#ignoredTargets.has(event.targetInfo.targetId)) {
-      return;
-    }
-    const target = this.#targets.get(event.targetInfo.targetId);
-    if (!target) {
-      throw new Error(
-        `Missing target in targetInfoChanged (id = ${event.targetInfo.targetId})`
-      );
-    }
+  #onTargetChanged = ({
+    target,
+    targetInfo,
+  }: {
+    target: Target;
+    targetInfo: Protocol.Target.TargetInfo;
+  }): void => {
     const previousURL = target.url();
     const wasInitialized = target._isInitialized;
-    target._targetInfoChanged(event.targetInfo);
+    target._targetInfoChanged(targetInfo);
     if (wasInitialized && previousURL !== target.url()) {
       this.emit(BrowserEmittedEvents.TargetChanged, target);
       target
         .browserContext()
         .emit(BrowserContextEmittedEvents.TargetChanged, target);
     }
-  }
+  };
 
   /**
    * The browser websocket endpoint which can be used as an argument to
@@ -526,7 +555,7 @@ export class Browser extends EventEmitter {
       url: 'about:blank',
       browserContextId: contextId || undefined,
     });
-    const target = this.#targets.get(targetId);
+    const target = this.#targetManager.attachedTargets().get(targetId);
     if (!target) {
       throw new Error(`Missing target for page (id = ${targetId})`);
     }
@@ -548,9 +577,11 @@ export class Browser extends EventEmitter {
    * an array with all the targets in all browser contexts.
    */
   targets(): Target[] {
-    return Array.from(this.#targets.values()).filter(target => {
-      return target._isInitialized;
-    });
+    return Array.from(this.#targetManager.attachedTargets().values()).filter(
+      target => {
+        return target._isInitialized;
+      }
+    );
   }
 
   /**
