@@ -20,6 +20,10 @@ import {Frame} from '../../lib/cjs/puppeteer/common/FrameManager.js';
 import {Page} from '../../lib/cjs/puppeteer/common/Page.js';
 import {EventEmitter} from '../../lib/cjs/puppeteer/common/EventEmitter.js';
 import {compare} from './golden-utils.js';
+import {
+  Awaitable,
+  AwaitableIteratable,
+} from '../../lib/cjs/puppeteer/common/types.js';
 
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 
@@ -144,6 +148,37 @@ export const waitEvent = (
     });
   });
 };
+
+export class Iterable {
+  static async map<T, U>(
+    iterable: AwaitableIteratable<T>,
+    callback: (value: T) => Awaitable<U>
+  ): Promise<U[]> {
+    const promises: Awaitable<U>[] = [];
+    for await (const obj of iterable) {
+      promises.push(callback(obj));
+    }
+    return Promise.all(promises);
+  }
+  static async reduce<T, U>(
+    iterable: AwaitableIteratable<T>,
+    callback: (prev: U, value: T) => Awaitable<U>,
+    initial: U
+  ): Promise<U> {
+    for await (const obj of iterable) {
+      initial = await callback(initial, obj);
+    }
+    return initial;
+  }
+  static async first<T>(
+    iterable: AwaitableIteratable<T>
+  ): Promise<T | undefined> {
+    for await (const value of iterable) {
+      return value;
+    }
+    return undefined;
+  }
+}
 
 /**
  * @deprecated Use exports directly.

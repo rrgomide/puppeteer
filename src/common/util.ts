@@ -185,7 +185,7 @@ export async function waitForEvent<T>(
 export function _createJSHandle(
   context: ExecutionContext,
   remoteObject: Protocol.Runtime.RemoteObject
-): JSHandle | ElementHandle {
+): JSHandle | ElementHandle<Node> {
   const frame = context.frame();
   if (remoteObject.subtype === 'node' && frame) {
     const frameManager = frame._frameManager;

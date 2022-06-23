@@ -27,7 +27,12 @@ import {LifecycleWatcher, PuppeteerLifeCycleEvent} from './LifecycleWatcher.js';
 import {NetworkManager} from './NetworkManager.js';
 import {Page} from './Page.js';
 import {TimeoutSettings} from './TimeoutSettings.js';
-import {EvaluateFunc, EvaluateParams, HandleFor} from './types.js';
+import {
+  AwaitableIteratable,
+  EvaluateFunc,
+  EvaluateParams,
+  HandleFor,
+} from './types.js';
 import {debugError, isErrorLike} from './util.js';
 
 const UTILITY_WORLD_NAME = '__puppeteer_utility_world__';
@@ -923,8 +928,8 @@ export class Frame {
   async $<Selector extends keyof HTMLElementTagNameMap>(
     selector: Selector
   ): Promise<ElementHandle<HTMLElementTagNameMap[Selector]> | null>;
-  async $(selector: string): Promise<ElementHandle | null>;
-  async $(selector: string): Promise<ElementHandle | null> {
+  async $(selector: string): Promise<ElementHandle<Node> | null>;
+  async $(selector: string): Promise<ElementHandle<Node> | null> {
     return this._mainWorld.$(selector);
   }
 
@@ -936,9 +941,13 @@ export class Frame {
    */
   async $$<Selector extends keyof HTMLElementTagNameMap>(
     selector: Selector
-  ): Promise<ElementHandle<HTMLElementTagNameMap[Selector]>[]>;
-  async $$(selector: string): Promise<ElementHandle[]>;
-  async $$(selector: string): Promise<ElementHandle[]> {
+  ): Promise<
+    AwaitableIteratable<ElementHandle<HTMLElementTagNameMap[Selector]>>
+  >;
+  async $$(selector: string): Promise<AwaitableIteratable<ElementHandle<Node>>>;
+  async $$(
+    selector: string
+  ): Promise<AwaitableIteratable<ElementHandle<Node>>> {
     return this._mainWorld.$$(selector);
   }
 
@@ -947,7 +956,9 @@ export class Frame {
    *
    * @param expression - the XPath expression to evaluate.
    */
-  async $x(expression: string): Promise<ElementHandle[]> {
+  async $x(
+    expression: string
+  ): Promise<AwaitableIteratable<ElementHandle<Node>>> {
     return this._mainWorld.$x(expression);
   }
 
@@ -983,8 +994,8 @@ export class Frame {
   ): Promise<Awaited<ReturnType<Func>>>;
   async $eval<
     Params extends unknown[],
-    Func extends EvaluateFunc<[Element, ...Params]> = EvaluateFunc<
-      [Element, ...Params]
+    Func extends EvaluateFunc<[Node, ...Params]> = EvaluateFunc<
+      [Node, ...Params]
     >
   >(
     selector: string,
@@ -993,8 +1004,8 @@ export class Frame {
   ): Promise<Awaited<ReturnType<Func>>>;
   async $eval<
     Params extends unknown[],
-    Func extends EvaluateFunc<[Element, ...Params]> = EvaluateFunc<
-      [Element, ...Params]
+    Func extends EvaluateFunc<[Node, ...Params]> = EvaluateFunc<
+      [Node, ...Params]
     >
   >(
     selector: string,
@@ -1027,8 +1038,8 @@ export class Frame {
     Selector extends keyof HTMLElementTagNameMap,
     Params extends unknown[],
     Func extends EvaluateFunc<
-      [HTMLElementTagNameMap[Selector][], ...Params]
-    > = EvaluateFunc<[HTMLElementTagNameMap[Selector][], ...Params]>
+      [Iterable<HTMLElementTagNameMap[Selector]>, ...Params]
+    > = EvaluateFunc<[Iterable<HTMLElementTagNameMap[Selector]>, ...Params]>
   >(
     selector: Selector,
     pageFunction: Func | string,
@@ -1036,8 +1047,8 @@ export class Frame {
   ): Promise<Awaited<ReturnType<Func>>>;
   async $$eval<
     Params extends unknown[],
-    Func extends EvaluateFunc<[Element[], ...Params]> = EvaluateFunc<
-      [Element[], ...Params]
+    Func extends EvaluateFunc<[Iterable<Node>, ...Params]> = EvaluateFunc<
+      [Iterable<Node>, ...Params]
     >
   >(
     selector: string,
@@ -1046,8 +1057,8 @@ export class Frame {
   ): Promise<Awaited<ReturnType<Func>>>;
   async $$eval<
     Params extends unknown[],
-    Func extends EvaluateFunc<[Element[], ...Params]> = EvaluateFunc<
-      [Element[], ...Params]
+    Func extends EvaluateFunc<[Iterable<Node>, ...Params]> = EvaluateFunc<
+      [Iterable<Node>, ...Params]
     >
   >(
     selector: string,
@@ -1134,7 +1145,7 @@ export class Frame {
    */
   async addScriptTag(
     options: FrameAddScriptTagOptions
-  ): Promise<ElementHandle> {
+  ): Promise<ElementHandle<HTMLScriptElement>> {
     return this._mainWorld.addScriptTag(options);
   }
 
@@ -1148,7 +1159,9 @@ export class Frame {
    * `onload` event fires or when the CSS content was injected into the
    * frame.
    */
-  async addStyleTag(options: FrameAddStyleTagOptions): Promise<ElementHandle> {
+  async addStyleTag(
+    options: FrameAddStyleTagOptions
+  ): Promise<ElementHandle<Node>> {
     return this._mainWorld.addStyleTag(options);
   }
 
@@ -1352,11 +1365,11 @@ export class Frame {
   async waitForSelector(
     selector: string,
     options?: WaitForSelectorOptions
-  ): Promise<ElementHandle | null>;
+  ): Promise<ElementHandle<Node> | null>;
   async waitForSelector(
     selector: string,
     options: WaitForSelectorOptions = {}
-  ): Promise<ElementHandle | null> {
+  ): Promise<ElementHandle<Node> | null> {
     const handle = await this._secondaryWorld.waitForSelector(
       selector,
       options
@@ -1388,7 +1401,7 @@ export class Frame {
   async waitForXPath(
     xpath: string,
     options: WaitForSelectorOptions = {}
-  ): Promise<ElementHandle | null> {
+  ): Promise<ElementHandle<Node> | null> {
     const handle = await this._secondaryWorld.waitForXPath(xpath, options);
     if (!handle) {
       return null;

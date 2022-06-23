@@ -14,32 +14,34 @@
  * limitations under the License.
  */
 
-import {WaitForSelectorOptions, DOMWorld} from './DOMWorld.js';
-import {JSHandle} from './JSHandle.js';
 import {ariaHandler} from './AriaQueryHandler.js';
+import {DOMWorld, WaitForSelectorOptions} from './DOMWorld.js';
 import {ElementHandle} from './ElementHandle.js';
+import {JSHandle} from './JSHandle.js';
+import {AwaitableIteratable} from './types.js';
 
 /**
  * @internal
  */
 export interface InternalQueryHandler {
   queryOne?: (
-    element: ElementHandle,
+    element: ElementHandle<Node>,
     selector: string
-  ) => Promise<ElementHandle | null>;
+  ) => Promise<ElementHandle<Node> | null>;
+  queryAll?: (
+    element: ElementHandle<Node>,
+    selector: string
+  ) => Promise<AwaitableIteratable<ElementHandle<Node>>>;
+
   waitFor?: (
     domWorld: DOMWorld,
     selector: string,
     options: WaitForSelectorOptions
-  ) => Promise<ElementHandle | null>;
-  queryAll?: (
-    element: ElementHandle,
-    selector: string
-  ) => Promise<ElementHandle[]>;
+  ) => Promise<ElementHandle<Node> | null>;
   queryAllArray?: (
-    element: ElementHandle,
+    element: ElementHandle<Node>,
     selector: string
-  ) => Promise<JSHandle<Element[]>>;
+  ) => Promise<JSHandle<Iterable<Node>>>;
 }
 
 /**
@@ -54,14 +56,13 @@ export interface InternalQueryHandler {
  * @public
  */
 export interface CustomQueryHandler {
-  queryOne?: (element: Element | Document, selector: string) => Element | null;
-  queryAll?: (
-    element: Element | Document,
-    selector: string
-  ) => Element[] | NodeListOf<Element>;
+  queryOne?: (element: Node, selector: string) => Node | null;
+  queryAll?: (element: Node, selector: string) => Iterable<Node>;
 }
 
-function makeQueryHandler(handler: CustomQueryHandler): InternalQueryHandler {
+function createInternalQueryHandler(
+  handler: CustomQueryHandler
+): InternalQueryHandler {
   const internalHandler: InternalQueryHandler = {};
 
   if (handler.queryOne) {
@@ -86,90 +87,84 @@ function makeQueryHandler(handler: CustomQueryHandler): InternalQueryHandler {
 
   if (handler.queryAll) {
     const queryAll = handler.queryAll;
-    internalHandler.queryAll = async (element, selector) => {
-      const jsHandle = await element.evaluateHandle(queryAll, selector);
-      const properties = await jsHandle.getProperties();
-      await jsHandle.dispose();
-      const result = [];
-      for (const property of properties.values()) {
-        const elementHandle = property.asElement();
-        if (elementHandle) {
-          result.push(elementHandle);
-        }
+    internalHandler.queryAll = async function (element, selector) {
+      const iterableHandle = await element.evaluateHandle(queryAll, selector);
+      const iteratorHandle = await iterableHandle.evaluateHandle(iterable => {
+        return iterable[Symbol.iterator]();
+      });
+      await iterableHandle.dispose();
+      async function* generate(handle: JSHandle<Iterator<Node, void>>) {
+        let elementHandle: ElementHandle<Node> | null = null;
+        do {
+          const nextHandle = await handle.evaluateHandle(iterator => {
+            return iterator.next().value;
+          });
+          elementHandle = nextHandle.asElement();
+          if (elementHandle) {
+            yield elementHandle;
+          }
+          await nextHandle.dispose();
+        } while (elementHandle);
+        await handle.dispose();
       }
-      return result;
+      return generate(iteratorHandle);
     };
     internalHandler.queryAllArray = async (element, selector) => {
-      const resultHandle = (await element.evaluateHandle(
-        queryAll,
-        selector
-      )) as JSHandle<Element[] | NodeListOf<Element>>;
-      const arrayHandle = await resultHandle.evaluateHandle(res => {
-        return Array.from(res);
-      });
-      return arrayHandle;
+      return await element.evaluateHandle(queryAll, selector);
     };
   }
 
   return internalHandler;
 }
 
-const _defaultHandler = makeQueryHandler({
-  queryOne: (element: Element | Document, selector: string) => {
-    return element.querySelector(selector);
+const _defaultHandler = createInternalQueryHandler({
+  queryOne: (element, selector) => {
+    if (element instanceof Element || element instanceof Document) {
+      return element.querySelector(selector);
+    }
+    return null;
   },
-  queryAll: (element: Element | Document, selector: string) => {
-    return element.querySelectorAll(selector);
+  queryAll: (element, selector) => {
+    if (element instanceof Element || element instanceof Document) {
+      return element.querySelectorAll(selector);
+    }
+    return [];
   },
 });
 
-const pierceHandler = makeQueryHandler({
+const pierceHandler = createInternalQueryHandler({
   queryOne: (element, selector) => {
     let found: Element | null = null;
-    const search = (root: Element | ShadowRoot) => {
+    function search(root: Node) {
       const iter = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
       do {
-        const currentNode = iter.currentNode as HTMLElement;
+        const currentNode = iter.currentNode as Element;
         if (currentNode.shadowRoot) {
           search(currentNode.shadowRoot);
-        }
-        if (currentNode instanceof ShadowRoot) {
-          continue;
         }
         if (currentNode !== root && !found && currentNode.matches(selector)) {
           found = currentNode;
         }
       } while (!found && iter.nextNode());
-    };
-    if (element instanceof Document) {
-      element = element.documentElement;
     }
     search(element);
     return found;
   },
 
   queryAll: (element, selector) => {
-    const result: Element[] = [];
-    const collect = (root: Element | ShadowRoot) => {
+    function* collect(root: Node): Generator<Node, void> {
       const iter = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
       do {
-        const currentNode = iter.currentNode as HTMLElement;
+        const currentNode = iter.currentNode as Element;
         if (currentNode.shadowRoot) {
-          collect(currentNode.shadowRoot);
-        }
-        if (currentNode instanceof ShadowRoot) {
-          continue;
+          yield* collect(currentNode.shadowRoot);
         }
         if (currentNode !== root && currentNode.matches(selector)) {
-          result.push(currentNode);
+          yield currentNode;
         }
       } while (iter.nextNode());
-    };
-    if (element instanceof Document) {
-      element = element.documentElement;
     }
-    collect(element);
-    return result;
+    return collect(element);
   },
 });
 
@@ -195,7 +190,7 @@ export function _registerCustomQueryHandler(
     throw new Error(`Custom query handler names may only contain [a-zA-Z]`);
   }
 
-  const internalHandler = makeQueryHandler(handler);
+  const internalHandler = createInternalQueryHandler(handler);
 
   queryHandlers.set(name, internalHandler);
 }

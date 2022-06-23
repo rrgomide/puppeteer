@@ -17,9 +17,10 @@
 import {JSHandle} from './JSHandle.js';
 import {ElementHandle} from './ElementHandle.js';
 
+export type AwaitableIteratable<T> = AsyncIterable<T> | Iterable<T>;
 export type Awaitable<T> = T | PromiseLike<T>;
 
-export type HandleFor<T> = T extends Element ? ElementHandle<T> : JSHandle<T>;
+export type HandleFor<T> = T extends Node ? ElementHandle<T> : JSHandle<T>;
 export type HandleOr<T> = HandleFor<T> | JSHandle<T> | T;
 
 export type EvaluateParams<T extends unknown[]> = {

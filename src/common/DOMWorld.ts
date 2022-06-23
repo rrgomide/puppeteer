@@ -26,7 +26,12 @@ import {JSHandle} from './JSHandle.js';
 import {LifecycleWatcher, PuppeteerLifeCycleEvent} from './LifecycleWatcher.js';
 import {_getQueryHandlerAndSelector} from './QueryHandler.js';
 import {TimeoutSettings} from './TimeoutSettings.js';
-import {EvaluateFunc, EvaluateParams, HandleFor} from './types.js';
+import {
+  AwaitableIteratable,
+  EvaluateFunc,
+  EvaluateParams,
+  HandleFor,
+} from './types.js';
 import {
   debugError,
   isNumber,
@@ -54,7 +59,7 @@ export interface WaitForSelectorOptions {
   visible?: boolean;
   hidden?: boolean;
   timeout?: number;
-  root?: ElementHandle;
+  root?: ElementHandle<Node>;
 }
 
 /**
@@ -73,7 +78,7 @@ export class DOMWorld {
   #client: CDPSession;
   #frame: Frame;
   #timeoutSettings: TimeoutSettings;
-  #documentPromise: Promise<ElementHandle> | null = null;
+  #documentPromise: Promise<ElementHandle<Document>> | null = null;
   #contextPromise: Promise<ExecutionContext> | null = null;
   #contextResolveCallback: ((x: ExecutionContext) => void) | null = null;
   #detached = false;
@@ -203,8 +208,8 @@ export class DOMWorld {
   async $<Selector extends keyof HTMLElementTagNameMap>(
     selector: Selector
   ): Promise<ElementHandle<HTMLElementTagNameMap[Selector]> | null>;
-  async $(selector: string): Promise<ElementHandle | null>;
-  async $(selector: string): Promise<ElementHandle | null> {
+  async $(selector: string): Promise<ElementHandle<Node> | null>;
+  async $(selector: string): Promise<ElementHandle<Node> | null> {
     const document = await this._document();
     const value = await document.$(selector);
     return value;
@@ -212,33 +217,35 @@ export class DOMWorld {
 
   async $$<Selector extends keyof HTMLElementTagNameMap>(
     selector: Selector
-  ): Promise<ElementHandle<HTMLElementTagNameMap[Selector]>[]>;
-  async $$(selector: string): Promise<ElementHandle[]>;
-  async $$(selector: string): Promise<ElementHandle[]> {
+  ): Promise<
+    AwaitableIteratable<ElementHandle<HTMLElementTagNameMap[Selector]>>
+  >;
+  async $$(selector: string): Promise<AwaitableIteratable<ElementHandle<Node>>>;
+  async $$(
+    selector: string
+  ): Promise<AwaitableIteratable<ElementHandle<Node>>> {
     const document = await this._document();
-    const value = await document.$$(selector);
-    return value;
+    return document.$$(selector);
   }
 
   /**
    * @internal
    */
-  async _document(): Promise<ElementHandle> {
+  async _document(): Promise<ElementHandle<Document>> {
     if (this.#documentPromise) {
       return this.#documentPromise;
     }
     this.#documentPromise = this.executionContext().then(async context => {
-      const document = await context.evaluateHandle('document');
-      const element = document.asElement();
-      if (element === null) {
-        throw new Error('Document is null');
-      }
-      return element;
+      return await context.evaluateHandle(() => {
+        return document;
+      });
     });
     return this.#documentPromise;
   }
 
-  async $x(expression: string): Promise<ElementHandle[]> {
+  async $x(
+    expression: string
+  ): Promise<AwaitableIteratable<ElementHandle<Node>>> {
     const document = await this._document();
     const value = await document.$x(expression);
     return value;
@@ -257,8 +264,8 @@ export class DOMWorld {
   ): Promise<Awaited<ReturnType<Func>>>;
   async $eval<
     Params extends unknown[],
-    Func extends EvaluateFunc<[Element, ...Params]> = EvaluateFunc<
-      [Element, ...Params]
+    Func extends EvaluateFunc<[Node, ...Params]> = EvaluateFunc<
+      [Node, ...Params]
     >
   >(
     selector: string,
@@ -267,8 +274,8 @@ export class DOMWorld {
   ): Promise<Awaited<ReturnType<Func>>>;
   async $eval<
     Params extends unknown[],
-    Func extends EvaluateFunc<[Element, ...Params]> = EvaluateFunc<
-      [Element, ...Params]
+    Func extends EvaluateFunc<[Node, ...Params]> = EvaluateFunc<
+      [Node, ...Params]
     >
   >(
     selector: string,
@@ -283,8 +290,8 @@ export class DOMWorld {
     Selector extends keyof HTMLElementTagNameMap,
     Params extends unknown[],
     Func extends EvaluateFunc<
-      [HTMLElementTagNameMap[Selector][], ...Params]
-    > = EvaluateFunc<[HTMLElementTagNameMap[Selector][], ...Params]>
+      [Iterable<HTMLElementTagNameMap[Selector]>, ...Params]
+    > = EvaluateFunc<[Iterable<HTMLElementTagNameMap[Selector]>, ...Params]>
   >(
     selector: Selector,
     pageFunction: Func | string,
@@ -292,8 +299,8 @@ export class DOMWorld {
   ): Promise<Awaited<ReturnType<Func>>>;
   async $$eval<
     Params extends unknown[],
-    Func extends EvaluateFunc<[Element[], ...Params]> = EvaluateFunc<
-      [Element[], ...Params]
+    Func extends EvaluateFunc<[Iterable<Node>, ...Params]> = EvaluateFunc<
+      [Iterable<Node>, ...Params]
     >
   >(
     selector: string,
@@ -302,8 +309,8 @@ export class DOMWorld {
   ): Promise<Awaited<ReturnType<Func>>>;
   async $$eval<
     Params extends unknown[],
-    Func extends EvaluateFunc<[Element[], ...Params]> = EvaluateFunc<
-      [Element[], ...Params]
+    Func extends EvaluateFunc<[Iterable<Node>, ...Params]> = EvaluateFunc<
+      [Iterable<Node>, ...Params]
     >
   >(
     selector: string,
@@ -377,7 +384,7 @@ export class DOMWorld {
     content?: string;
     id?: string;
     type?: string;
-  }): Promise<ElementHandle> {
+  }): Promise<ElementHandle<HTMLScriptElement>> {
     const {
       url = null,
       path = null,
@@ -388,17 +395,7 @@ export class DOMWorld {
     if (url !== null) {
       try {
         const context = await this.executionContext();
-        const handle = await context.evaluateHandle(
-          addScriptUrl,
-          url,
-          id,
-          type
-        );
-        const elementHandle = handle.asElement();
-        if (elementHandle === null) {
-          throw new Error('Script element is not found');
-        }
-        return elementHandle;
+        return await context.evaluateHandle(addScriptUrl, url, id, type);
       } catch (error) {
         throw new Error(`Loading script from ${url} failed`);
       }
@@ -419,43 +416,19 @@ export class DOMWorld {
       let contents = await fs.readFile(path, 'utf8');
       contents += '//# sourceURL=' + path.replace(/\n/g, '');
       const context = await this.executionContext();
-      const handle = await context.evaluateHandle(
-        addScriptContent,
-        contents,
-        id,
-        type
-      );
-      const elementHandle = handle.asElement();
-      if (elementHandle === null) {
-        throw new Error('Script element is not found');
-      }
-      return elementHandle;
+      return await context.evaluateHandle(addScriptContent, contents, id, type);
     }
 
     if (content !== null) {
       const context = await this.executionContext();
-      const handle = await context.evaluateHandle(
-        addScriptContent,
-        content,
-        id,
-        type
-      );
-      const elementHandle = handle.asElement();
-      if (elementHandle === null) {
-        throw new Error('Script element is not found');
-      }
-      return elementHandle;
+      return await context.evaluateHandle(addScriptContent, content, id, type);
     }
 
     throw new Error(
       'Provide an object with a `url`, `path` or `content` property'
     );
 
-    async function addScriptUrl(
-      url: string,
-      id: string,
-      type: string
-    ): Promise<HTMLElement> {
+    async function addScriptUrl(url: string, id: string, type: string) {
       const script = document.createElement('script');
       script.src = url;
       if (id) {
@@ -477,7 +450,7 @@ export class DOMWorld {
       content: string,
       id: string,
       type = 'text/javascript'
-    ): HTMLElement {
+    ) {
       const script = document.createElement('script');
       script.type = type;
       script.text = content;
@@ -510,7 +483,7 @@ export class DOMWorld {
     url?: string;
     path?: string;
     content?: string;
-  }): Promise<ElementHandle> {
+  }): Promise<ElementHandle<Node>> {
     const {url = null, path = null, content = null} = options;
     if (url !== null) {
       try {
@@ -647,11 +620,11 @@ export class DOMWorld {
   async waitForSelector(
     selector: string,
     options: WaitForSelectorOptions
-  ): Promise<ElementHandle | null>;
+  ): Promise<ElementHandle<Node> | null>;
   async waitForSelector(
     selector: string,
     options: WaitForSelectorOptions
-  ): Promise<ElementHandle | null> {
+  ): Promise<ElementHandle<Node> | null> {
     const {updatedSelector, queryHandler} =
       _getQueryHandlerAndSelector(selector);
     assert(queryHandler.waitFor, 'Query handler does not support waiting');
@@ -784,7 +757,7 @@ export class DOMWorld {
     selector: string,
     options: WaitForSelectorOptions,
     binding?: PageBinding
-  ): Promise<ElementHandle | null> {
+  ): Promise<ElementHandle<Node> | null> {
     const {
       visible: waitForVisible = false,
       hidden: waitForHidden = false,
@@ -829,7 +802,7 @@ export class DOMWorld {
   async waitForXPath(
     xpath: string,
     options: WaitForSelectorOptions
-  ): Promise<ElementHandle | null> {
+  ): Promise<ElementHandle<Node> | null> {
     const {
       visible: waitForVisible = false,
       hidden: waitForHidden = false,
@@ -911,7 +884,7 @@ export interface WaitTaskOptions {
   timeout: number;
   binding?: PageBinding;
   args: unknown[];
-  root?: ElementHandle;
+  root?: ElementHandle<Node>;
 }
 
 const noop = (): void => {};
@@ -932,7 +905,7 @@ export class WaitTask {
   #reject: (x: Error) => void = noop;
   #timeoutTimer?: NodeJS.Timeout;
   #terminated = false;
-  #root: ElementHandle | null = null;
+  #root: ElementHandle<Node> | null = null;
 
   promise: Promise<JSHandle>;
 
